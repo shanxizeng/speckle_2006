@@ -1,0 +1,1 @@
+-o an4.log -e an4.err ../run_base_train_riscv.0000/sphinx_livepretend_base.riscv ctlfile . args.an4

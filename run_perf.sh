@@ -1,27 +1,30 @@
 #!/bin/bash
 
-# run.sh — 运行 SPEC2006 benchmark（不使用 perf）
+# run_perf.sh — 使用 perf.riscv 运行 SPEC2006 benchmark 并采集性能数据
 #
 # 用法:
-#   ./run.sh [options] <benchmark-name>
-#   ./run.sh [options] --all
+#   ./run_perf.sh [options] <benchmark-name>
+#   ./run_perf.sh [options] --all
 #
 # 选项:
-#   --run <cmd>         运行器命令 (默认: spike pk -c)
-#   --output <dir>      输出目录 (默认: ./output)
-#   --workload <N>      只运行第 N 个 workload (默认: 全部)
-#   --all               运行所有 benchmark
-#   --suite <type>      套件: int | fp | all (默认: all)
-#   --input <type>      输入集: test | train | ref (默认: ref)
-#   --dry-run           只打印命令，不执行
+#   --perf <path>        perf.riscv 的路径 (默认: ./perf.riscv)
+#   --params <path>      samplectrl.txt 的路径 (默认: ./samplectrl.txt)
+#   --output <dir>       输出目录 (默认: ./perf_logs)
+#   --workload <N>       只运行第 N 个 workload (默认: 全部)
+#   --all                运行所有 benchmark
+#   --suite <type>       套件: int | fp | all (默认: all)
+#   --input <type>       输入集: test | train | ref (默认: ref)
+#   --dry-run            只打印要执行的命令，不实际运行
 
 set -e
 
 BUILD_DIR="${PWD}/build"
 COMMANDS_DIR="${PWD}/commands"
+DEFAULT_RUN="${TARGET_RUN:-spike pk -c}"
 
-RUN="${TARGET_RUN:-spike pk -c}"
-OUTPUT_DIR="${PWD}/output"
+PERF="${PWD}/perf.riscv"
+PARAMS="${PWD}/samplectrl.txt"
+OUTPUT_DIR="${PWD}/perf_logs"
 WORKLOAD_NUM=""
 BENCHMARK=""
 ALL_MODE=false
@@ -33,22 +36,26 @@ INT_BENCHMARKS=(400.perlbench 401.bzip2 403.gcc 429.mcf 445.gobmk 456.hmmer 458.
 FP_BENCHMARKS=(410.bwaves 416.gamess 433.milc 434.zeusmp 435.gromacs 436.cactusADM 437.leslie3d 444.namd 447.dealII 450.soplex 453.povray 454.calculix 459.GemsFDTD 465.tonto 470.lbm 481.wrf 482.sphinx3)
 
 function usage {
-    echo "usage: run.sh [options] <benchmark-name>"
-    echo "       run.sh [options] --all [--suite <type> ...] [--input <type>]"
+    echo "usage: run_perf.sh [options] <benchmark-name>"
+    echo "       run_perf.sh [options] --all [--suite <type> ...] [--input <type>]"
     echo ""
-    echo "   --run <cmd>         运行器命令 (默认: spike pk -c)"
-    echo "   --output <dir>      输出目录 (默认: ./output)"
-    echo "   --workload <N>      只运行第 N 个 workload (默认: 全部)"
-    echo "   --all               运行所有 benchmark"
-    echo "   --suite <type>      套件: int | fp | all (默认: all)"
-    echo "   --input <type>      输入集: test | train | ref (默认: ref)"
-    echo "   --dry-run           只打印命令，不执行"
+    echo "   --perf <path>        perf.riscv 路径 (默认: ./perf.riscv)"
+    echo "   --params <path>      samplectrl.txt 路径 (默认: ./samplectrl.txt)"
+    echo "   --output <dir>       输出目录 (默认: ./perf_logs)"
+    echo "   --workload <N>       只运行第 N 个 workload (默认: 全部)"
+    echo "   --all                运行所有 benchmark"
+    echo "   --suite <type>       套件: int | fp | all (默认: all)"
+    echo "                        可多次指定: --suite int --suite fp"
+    echo "   --input <type>       输入集: test | train | ref (默认: ref)"
+    echo "   --dry-run            只打印命令，不实际执行"
 }
 
 while test $# -gt 0; do
     case "$1" in
-        --run)
-            shift; RUN="$1" ;;
+        --perf)
+            shift; PERF="$1" ;;
+        --params)
+            shift; PARAMS="$1" ;;
         --output)
             shift; OUTPUT_DIR="$1" ;;
         --workload)
@@ -83,10 +90,12 @@ while test $# -gt 0; do
     shift
 done
 
+# 默认所有套件
 if [ ${#SUITE_TYPES[@]} -eq 0 ]; then
     SUITE_TYPES=(int fp)
 fi
 
+# 确定要运行的 benchmark 列表
 if [ "$ALL_MODE" = true ] || [ -n "$BENCHMARK" ]; then
     BENCHMARKS=()
     if [ -n "$BENCHMARK" ]; then
@@ -105,7 +114,25 @@ else
     usage; exit 1
 fi
 
+# 检查 perf.riscv 和参数文件（dry-run 模式不检查）
+if [ "$DRY_RUN" = false ]; then
+    if [ ! -x "$PERF" ]; then
+        echo "ERROR: perf.riscv not found or not executable: $PERF"
+        exit 1
+    fi
+    if [ ! -f "$PARAMS" ]; then
+        echo "ERROR: params file not found: $PARAMS"
+        exit 1
+    fi
+fi
+
 mkdir -p "$OUTPUT_DIR"
+
+# 从 params 提取日志基名
+if [ -f "$PARAMS" ]; then
+    LOGBASE=$(grep -E "^logname:" "$PARAMS" | awk '{print $2}' | sed 's/\.log$//')
+fi
+LOGBASE="${LOGBASE:-counter}"
 
 function get_short_exe {
     local b="$1"
@@ -134,18 +161,29 @@ function run_workload {
         return 1
     fi
 
-    local out_file="${OUTPUT_DIR}/${bmark_name}.${widx}.out"
-    local cmd="${RUN} ${binary} ${args}"
-    echo "  [${bmark_name}] workload ${widx}"
+    local log_file="${OUTPUT_DIR}/${bmark_name}_w${widx}_${LOGBASE}.log"
+    echo "  [${bmark_name}] workload ${widx}: $(basename "$binary") $(echo "$args" | cut -c1-80)"
 
     if [ "$DRY_RUN" = true ]; then
-        echo "    -> ${cmd} > ${out_file}"
+        echo "    -> perf.riscv <params> ${binary} $(basename "$binary") $args"
         return 0
     fi
 
-    eval "${cmd} > ${out_file}" 2>&1 || {
-        echo "  WARNING: ${bmark_name} workload ${widx} exited with code $?"
-    }
+    local tmp_params="${OUTPUT_DIR}/.tmp_samplectrl_$$.txt"
+    sed "s|^logname:.*|logname: ${log_file}|" "$PARAMS" > "$tmp_params"
+
+    (
+        cd "$bmark_dir" || exit 1
+        "$PERF" "$tmp_params" "./$(basename "$binary")" "$(basename "$binary")" $args
+    )
+    local rc=$?
+
+    rm -f "$tmp_params"
+
+    if [ $rc -ne 0 ]; then
+        echo "  WARNING: perf.riscv exited with code $rc"
+    fi
+    return 0
 }
 
 function run_benchmark {
@@ -185,12 +223,13 @@ function run_benchmark {
     echo ""
 }
 
-echo "== SPEC2006 run =="
-echo "  run     : ${RUN}"
+echo "== SPEC2006 run_perf =="
+echo "  perf    : $PERF"
+echo "  params  : $PARAMS"
+echo "  output  : $OUTPUT_DIR"
 echo "  suites  : ${SUITE_TYPES[*]}"
-echo "  input   : ${INPUT_TYPE}"
-echo "  output  : ${OUTPUT_DIR}"
-echo "  dry-run : ${DRY_RUN}"
+echo "  input   : $INPUT_TYPE"
+echo "  dry-run : $DRY_RUN"
 echo ""
 
 total=0
@@ -199,4 +238,4 @@ for b in "${BENCHMARKS[@]}"; do
     total=$((total + 1))
 done
 
-echo "Done! Ran $total benchmarks. Output in: $OUTPUT_DIR"
+echo "Done! Ran $total benchmarks. Logs in: $OUTPUT_DIR"

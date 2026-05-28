@@ -1,0 +1,1 @@
+-o train.out -e train.err ../run_base_train_riscv.0000/Xalan_base.riscv -v allbooks.xml xalanc.xsl

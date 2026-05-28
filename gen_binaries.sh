@@ -1,14 +1,20 @@
 #!/bin/bash
-#set -e
+set -e
 
 #############
 # TODO
-#  * allow the user to input their desired input set
 #  * auto-handle output file generation
 
-if [ -z  "$SPEC_DIR" ]; then 
+if [ -z  "$SPEC_DIR" ]; then
    echo "  Please set the SPEC_DIR environment variable to point to your copy of SPEC CPU2006."
    exit 1
+fi
+
+# RISC-V toolchain
+RISCV_TOOLCHAIN="${RISCV_TOOLCHAIN:-/home/sxz/rv-toolchain/install/rv64g/bin}"
+if [ -d "$RISCV_TOOLCHAIN" ]; then
+   export PATH="${RISCV_TOOLCHAIN}:${PATH}"
+   echo "  Using RISC-V toolchain: ${RISCV_TOOLCHAIN}"
 fi
 
 CONFIG=riscv
@@ -18,7 +24,9 @@ CMD_FILE=commands.txt
 INPUT_TYPE=test
 
 # the integer set
-BENCHMARKS=(400.perlbench 401.bzip2 403.gcc 429.mcf 445.gobmk 456.hmmer 458.sjeng 462.libquantum 464.h264ref 471.omnetpp 473.astar 483.xalancbmk)
+BENCHMARKS_INT=(400.perlbench 401.bzip2 403.gcc 429.mcf 445.gobmk 456.hmmer 458.sjeng 462.libquantum 464.h264ref 471.omnetpp 473.astar 483.xalancbmk)
+# the floating-point set
+BENCHMARKS_FP=(410.bwaves 416.gamess 433.milc 434.zeusmp 435.gromacs 436.cactusADM 437.leslie3d 444.namd 447.dealII 450.soplex 453.povray 454.calculix 459.GemsFDTD 465.tonto 470.lbm 481.wrf 482.sphinx3)
 
 # idiomatic parameter and option handling in sh
 compileFlag=false
@@ -27,26 +35,49 @@ copyFlag=false
 while test $# -gt 0
 do
    case "$1" in
-        --compile) 
+        --compile)
             compileFlag=true
             ;;
-        --run) 
+        --run)
             runFlag=true
             ;;
         --copy)
             copyFlag=true
             ;;
+        --input)
+            shift;
+            INPUT_TYPE=$1
+            ;;
+        --suite)
+            shift;
+            SUITE_TYPE=$1
+            ;;
+        -h | -H | -help)
+            echo "usage: gen_binaries.sh [--compile | --run | --copy] [--input test|train|ref] [--suite int|fp]"
+            exit
+            ;;
         --*) echo "ERROR: bad option $1"
             echo "  --compile (compile the SPEC benchmarks), --run (to run the benchmarks) --copy (copies, not symlinks, benchmarks to a new dir)"
+            echo "  --input [test|train|ref], --suite [int|fp]"
             exit 1
             ;;
         *) echo "ERROR: bad argument $1"
             echo "  --compile (compile the SPEC benchmarks), --run (to run the benchmarks) --copy (copies, not symlinks, benchmarks to a new dir)"
+            echo "  --input [test|train|ref], --suite [int|fp]"
             exit 2
             ;;
     esac
     shift
 done
+
+# set BENCHMARKS based on suite type (after argument parsing)
+if [ "${SUITE_TYPE:-int}" = "fp" ]; then
+    BENCHMARKS=("${BENCHMARKS_FP[@]}")
+elif [ "${SUITE_TYPE:-int}" = "all" ]; then
+    BENCHMARKS=("${BENCHMARKS_INT[@]}" "${BENCHMARKS_FP[@]}")
+else
+    BENCHMARKS=("${BENCHMARKS_INT[@]}")
+fi
 
 echo "== Speckle Options =="
 echo "  Config : " ${CONFIG}
@@ -66,8 +97,9 @@ if [ "$compileFlag" = true ]; then
    echo "Compiling SPEC..."
    # copy over the config file we will use to compile the benchmarks
    cp $BUILD_DIR/../${CONFIGFILE} $SPEC_DIR/config/${CONFIGFILE}
-   cd $SPEC_DIR; . ./shrc; time runspec --config ${CONFIG} --size ${INPUT_TYPE} --action setup int
-#   cd $SPEC_DIR; . ./shrc; time runspec --config ${CONFIG} --size ${INPUT_TYPE} --action scrub int
+   SUITE="${SUITE_TYPE:-int}"
+   cd $SPEC_DIR; . ./shrc; time runspec --config ${CONFIG} --size ${INPUT_TYPE} --action setup ${SUITE}
+#   cd $SPEC_DIR; . ./shrc; time runspec --config ${CONFIG} --size ${INPUT_TYPE} --action scrub ${SUITE}
 
    if [ "$copyFlag" = true ]; then
       rm -rf $COPY_DIR

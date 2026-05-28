@@ -1,0 +1,8 @@
+--quiet --mode gtp
+--quiet --mode gtp
+--quiet --mode gtp
+--quiet --mode gtp
+--quiet --mode gtp
+--quiet --mode gtp
+--quiet --mode gtp
+--quiet --mode gtp
