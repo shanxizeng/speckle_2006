@@ -4,15 +4,23 @@
 
 | 组件 | 说明 |
 |---|---|
-| SPEC CPU2006 v1.1 | `/home/sxz/cpu2006`，需先安装并编译工具链（`./install.sh`） |
-| RISC-V 工具链 | `riscv64-unknown-linux-gnu-gcc/g++/gfortran` (GCC 14.2.0) |
-| 工具链路径 | `/home/sxz/rv-toolchain/install/rv64g/bin` |
+| SPEC CPU2006 v1.1 | 需要许可的 SPEC CPU2006 安装（需完成 `./install.sh` 并编译工具） |
+| RISC-V 工具链 | `riscv64-unknown-linux-gnu-gcc/g++/gfortran` (GCC 14 测试通过) |
 
 ### 环境变量
 
 ```bash
-export SPEC_DIR=/home/sxz/cpu2006
+export SPEC_DIR=<spec2006安装目录>          # 如 /opt/cpu2006
+export RISCV_TOOLCHAIN=<riscv工具链bin目录>  # 如 /opt/riscv-toolchain/bin
 ```
+
+示例：
+```bash
+export SPEC_DIR=/opt/cpu2006
+export RISCV_TOOLCHAIN=/opt/riscv-toolchain/bin
+```
+
+**注意：** `RISCV_TOOLCHAIN` 要带 `/bin` 后缀，与 SPEC2017 的 `RISCV`（不带 `/bin`）不同。
 
 ## 构建命令
 
@@ -185,17 +193,55 @@ logname: counter.log # 日志文件名（脚本自动替换输出路径）
 
 ### 1. SPEC2006 工具路径修复
 
-**问题：** SPEC2006 安装在 `/home/test/cpu2006`（原始路径），被移动到 `/home/sxz/cpu2006`，导致所有 Perl 脚本的 shebang 指向不存在的位置。
+**问题：** 如果 SPEC2006 安装目录发生过迁移（例如从一台机器拷贝到另一台），`bin/` 下所有 Perl 脚本的 shebang 指向旧路径，且 `MANIFEST` 中记录的 MD5 校验和不匹配，导致 `runspec` 完整性检查报 "corrupt"。
 
-**修复文件（10个）：**
+**涉及的脚本文件（10 个）：**
 `bin/runspec`, `bin/extract_config`, `bin/extract_raw`, `bin/toolsver`, `bin/specdiff`, `bin/makesrcalt`, `bin/configpp`, `bin/printpath.pl`, `bin/extract_flags`, `bin/rawformat`
 
-**操作：**
-```bash
-sed -i 's|/home/test/cpu2006|/home/sxz/cpu2006|g' <file>
-```
+**通用修复步骤：**
 
-**MANIFEST 更新：** 修改上述 10 个文件的 MD5 校验和 + 文件大小。此外，10 个编译工具的二进制/脚本（`bin/specbzip2`, `bin/specinvoke`, `bin/specinvoke_pm`, `bin/specmake`, `bin/specmd5sum`, `bin/specperl`, `bin/specperl.wrapper`, `bin/specperldoc`, `bin/specrxp`, `bin/spectar`）在 MANIFEST 中没有条目，导致完整性检查失败 — 已手动添加。另修正了 `bin/specpp` 和 6 个其他 `bin/` 文件的不匹配校验和。
+```bash
+# 1. 修复 Perl 脚本的 shebang 路径
+cd $SPEC_DIR
+OLD_PATH=$(head -1 bin/runspec | sed 's|^#!||;s|/bin/specperl||')
+for f in $(grep -rl "$OLD_PATH" bin/ 2>/dev/null); do
+    sed -i "s|$OLD_PATH|$SPEC_DIR|g" "$f"
+done
+
+# 2. 重新计算并更新 MANIFEST 中所有 bin/ 文件的 MD5
+# 使用 python3 批量更新 MANIFEST 中的所有 bin/ 条目到最新 MD5
+python3 -c "
+import hashlib, os, re
+manifest = '$SPEC_DIR/MANIFEST'
+with open(manifest) as f:
+    lines = f.readlines()
+new_lines = []
+for line in lines:
+    m = re.match(r'^([a-f0-9]{32}) \* ([A-F0-9]{8}) (bin/.+)$', line.rstrip())
+    if m and os.path.isfile(m.group(3)):
+        with open(m.group(3), 'rb') as fh:
+            content = fh.read()
+        new_md5 = hashlib.md5(content).hexdigest()
+        new_size = f'{len(content):08X}'
+        if new_md5 != m.group(1):
+            line = f'{new_md5} * {new_size} {m.group(3)}\n'
+    new_lines.append(line)
+with open(manifest, 'w') as f:
+    f.writelines(new_lines)
+print('MANIFEST updated')
+"
+
+# 3. 为 MANIFEST 中缺失的编译工具添加校验和条目
+for f in bin/specbzip2 bin/specinvoke bin/specinvoke_pm bin/specmake \
+         bin/specmd5sum bin/specperl bin/specperl.wrapper bin/specperldoc \
+         bin/specrxp bin/spectar; do
+    if [ -f "\$f" ] && ! grep -q "$f\$" MANIFEST; then
+        md5=\$(md5sum "\$f" | awk '{print \$1}')
+        size=\$(printf "%08X" \$(wc -c < "\$f"))
+        echo "\${md5} * \${size} \$f" >> MANIFEST
+    fi
+done
+```
 
 ### 2. riscv.cfg — GCC 14 兼容性标志
 
@@ -260,7 +306,7 @@ GCC 14 对类型检查、隐式声明等更严格，需要在 `riscv.cfg` 中为
 |---|---|
 | `--input test\|train\|ref` | 新增输入集参数，默认 `test` |
 | `--suite int\|fp\|all` | 新增套件参数，默认 `int` |
-| RISC-V 工具链自动检测 | 读取 `$RISCV_TOOLCHAIN` 环境变量或默认路径 `/home/sxz/rv-toolchain/install/rv64g/bin`，自动加入 `PATH` |
+| RISC-V 工具链自动检测 | 读取 `$RISCV_TOOLCHAIN` 环境变量，自动加入 `PATH` |
 | `set -e` | 启用严格错误退出 |
 | BENCHMARKS 赋值位置修正 | 原来在参数解析**之前**赋值，导致 `--suite fp` 无效。已移到参数解析之后 |
 
