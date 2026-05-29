@@ -1,36 +1,42 @@
 #!/usr/bin/env python3
 """
-分析 perf.riscv perf_logs，输出表格：一行一个 benchmark，列为 IPC + 各组 ready%/util%。
-
-ready% = 操作数就绪（0 busy）的 uop 在该 FU 组中的占比
-util% = Issue Queue 非 stall 周期占比（至少 1 条指令 ready）
+分析 perf.riscv perf_logs，输出 CSV 表格：
+每行一个 benchmark，列为 IPC + 各组内每个计数器的占比(%)。
 
 用法:
-  ./analyze_counters.py perf_logs/                        # 单个目录
-  ./analyze_counters.py perf_logs/ perf_logs_age/         # 并排对比
+  ./analyze_counters.py perf_logs/ > counters.csv
+  ./analyze_counters.py perf_logs/ perf_logs_age/ > compare.csv
 """
 
 import os, sys, json, glob
 from collections import defaultdict
 
-# ── 列定义: (组名, [事件ID], 就绪事件ID或'util', 列标题) ──
-COLUMNS = [
-    ("Dispatch", [2,3,4],       4,       "Disp.ready%"),
-    ("ALU",      [5,6,7],       7,       "ALU.ready%"),
-    ("Branch",   [8,9,10],      10,      "Br.ready%"),
-    ("JMP",      [11,12,13],    13,      "JMP.ready%"),
-    ("MEM",      [14,15,16],    16,      "MEM.ready%"),
-    ("MUL",      [17,18,19],    19,      "MUL.ready%"),
-    ("DIV",      [20,21,22],    22,      "DIV.ready%"),
-    ("FPU",      [23,24,25],    25,      "FPU.ready%"),
-    ("FDIV",     [26,27,28],    28,      "FDIV.ready%"),
-    ("I2F",      [29,30,31],    31,      "I2F.ready%"),
-    ("F2I",      [32,33,34],    34,      "F2I.ready%"),
-    ("F2IMEM",   [35,36,37],    37,      "F2IM.ready%"),
-    ("FMA",      [38,39,40,41], 41,      "FMA.ready%"),
-    ("IQ0",      list(range(42,63)), 'util', "IQ0.util%"),
-    ("IQ1",      list(range(63,76)), 'util', "IQ1.util%"),
-    ("FPQ",      list(range(76,93)), 'util', "FPQ.util%"),
+# (组名, [(event_id, 标签), ...])
+GROUPS = [
+    ("Dispatch",  [(2,"2busy"), (3,"1busy"), (4,"ready")]),
+    ("ALU",       [(5,"2busy"), (6,"1busy"), (7,"ready")]),
+    ("Branch",    [(8,"2busy"), (9,"1busy"), (10,"ready")]),
+    ("JMP",       [(11,"2busy"), (12,"1busy"), (13,"ready")]),
+    ("MEM",       [(14,"2busy"), (15,"1busy"), (16,"ready")]),
+    ("MUL",       [(17,"2busy"), (18,"1busy"), (19,"ready")]),
+    ("DIV",       [(20,"2busy"), (21,"1busy"), (22,"ready")]),
+    ("FPU",       [(23,"2busy"), (24,"1busy"), (25,"ready")]),
+    ("FDIV",      [(26,"2busy"), (27,"1busy"), (28,"ready")]),
+    ("I2F",       [(29,"2busy"), (30,"1busy"), (31,"ready")]),
+    ("F2I",       [(32,"2busy"), (33,"1busy"), (34,"ready")]),
+    ("F2IMEM",    [(35,"2busy"), (36,"1busy"), (37,"ready")]),
+    ("FMA",       [(38,"3busy"), (39,"2busy"), (40,"1busy"), (41,"ready")]),
+    ("IQ0",       [(42,"stall"),(43,"=1"),(44,"=2"),(45,"=3"),(46,"=4"),
+                   (47,"=5"),(48,"=6"),(49,"=7"),(50,"=8"),(51,"=9"),
+                   (52,"=10"),(53,"=11"),(54,"=12"),(55,"=13"),(56,"=14"),
+                   (57,"=15"),(58,"=16"),(59,"=17"),(60,"=18"),(61,"=19"),(62,"=20")]),
+    ("IQ1",       [(63,"stall"),(64,"=1"),(65,"=2"),(66,"=3"),(67,"=4"),
+                   (68,"=5"),(69,"=6"),(70,"=7"),(71,"=8"),(72,"=9"),
+                   (73,"=10"),(74,"=11"),(75,"=12")]),
+    ("FPQ",       [(76,"stall"),(77,"=1"),(78,"=2"),(79,"=3"),(80,"=4"),
+                   (81,"=5"),(82,"=6"),(83,"=7"),(84,"=8"),(85,"=9"),
+                   (86,"=10"),(87,"=11"),(88,"=12"),(89,"=13"),(90,"=14"),
+                   (91,"=15"),(92,"=16")]),
 ]
 
 
@@ -60,18 +66,26 @@ def analyze_dir(log_dir):
     return results
 
 
-def print_table(all_results):
+def build_csv(all_results):
     labels = list(all_results.keys())
     benchmarks = sorted(set().union(*[set(d.keys()) for d in all_results.values()]))
 
-    headers = ["Benchmark", "S"]
+    # 表头 — 单目录模式不加前缀
+    multi = len(labels) > 1
+    header = ["Benchmark", "S"]
     for lbl in labels:
-        headers.append(f"[{lbl}] IPC")
-    for _, _, _, col_name in COLUMNS:
+        prefix = f"{lbl}." if multi else ""
+        header.append(f"{prefix}IPC")
+    for gname, events in GROUPS:
+        gshort = gname.replace("Dispatch","Disp").replace("Branch","Br").replace("IMEM","IM")
         for lbl in labels:
-            headers.append(f"[{lbl}] {col_name}")
+            prefix = f"{lbl}." if multi else ""
+            for eid, tag in events:
+                t = tag.replace("ready","rdy").replace("busy","bsy").replace("stall","stl")
+                header.append(f"{prefix}{gshort}.{t}%")
 
-    rows = []
+    rows = [",".join(header)]
+
     for bm in benchmarks:
         row = [bm]
         d0 = all_results[labels[0]].get(bm, (0, 0, {}))
@@ -81,31 +95,46 @@ def print_table(all_results):
             ns, ipc, _ = all_results[lbl].get(bm, (0, 0, {}))
             row.append(f"{ipc:.4f}")
 
-        for _, ev_ids, ready_id, _ in COLUMNS:
+        for gname, events in GROUPS:
             for lbl in labels:
                 _, _, ev = all_results[lbl].get(bm, (0, 0, {}))
-                total = sum(ev.get(i, 0) for i in ev_ids)
-                if total == 0:
-                    row.append("-")
-                elif ready_id == 'util':
-                    stall = ev.get(ev_ids[0], 0)
-                    row.append(f"{(1 - stall/total)*100:.1f}")
-                else:
-                    r = ev.get(ready_id, 0)
-                    row.append(f"{r/total*100:.1f}")
-        rows.append(row)
+                total = sum(ev.get(eid, 0) for eid, _ in events)
+                for eid, tag in events:
+                    if total == 0:
+                        row.append("")
+                    else:
+                        val = ev.get(eid, 0)
+                        row.append(f"{val/total*100:.1f}")
+        rows.append(",".join(row))
 
-    widths = [len(h) for h in headers]
-    for row in rows:
-        for i, cell in enumerate(row):
-            widths[i] = max(widths[i], len(str(cell)))
+    # 平均行
+    if len(rows) > 1:
+        avg_row = ["AVERAGE", ""]
+        n_bench = len(rows) - 1
+        # IPC: 直接对各 benchmark 的 IPC 取算数平均
+        ipc_cols = []
+        for i, h in enumerate(header):
+            if h.endswith("IPC") or h == "IPC":
+                ipc_cols.append(i)
+        # 收集所有数值列
+        for i, h in enumerate(header):
+            if i < 2: continue  # skip Benchmark, S
+            vals = []
+            for r in rows[1:]:
+                cols = r.split(",")
+                v = cols[i] if i < len(cols) else ""
+                if v and v != "-":
+                    try: vals.append(float(v))
+                    except: pass
+            if vals and h.endswith("IPC"):
+                avg_row.append(f"{sum(vals)/len(vals):.4f}")
+            elif vals:
+                avg_row.append(f"{sum(vals)/len(vals):.1f}")
+            else:
+                avg_row.append("")
+        rows.append(",".join(avg_row))
 
-    header_line = "  ".join(h.ljust(widths[i]) for i, h in enumerate(headers))
-    print(header_line)
-    print("-" * len(header_line))
-    for row in rows:
-        print("  ".join(str(c).ljust(widths[i]) for i, c in enumerate(row)))
-    print(f"\n({len(benchmarks)} benchmarks)")
+    return rows
 
 
 if __name__ == "__main__":
@@ -113,6 +142,10 @@ if __name__ == "__main__":
     for d in log_dirs:
         if not os.path.isdir(d):
             print(f"ERROR: {d} not found", file=sys.stderr); sys.exit(1)
+
     labels = [os.path.basename(d.rstrip("/")) for d in log_dirs]
     all_results = {lbl: analyze_dir(d) for lbl, d in zip(labels, log_dirs)}
-    print_table(all_results)
+    rows = build_csv(all_results)
+
+    for row in rows:
+        print(row)

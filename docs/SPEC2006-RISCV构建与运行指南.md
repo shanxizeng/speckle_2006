@@ -293,10 +293,51 @@ GCC 14 对类型检查、隐式声明等更严格，需要在 `riscv.cfg` 中为
 # 过滤掉 -C / -o / -e 等 specinvoke 选项，提取纯命令行参数
 ```
 
+## FPGA 运行结果（test 输入集）
+
+`--package` 构建的 portable 目录在 FPGA（RISC-V Linux）上的 test 输入的运行情况：
+
+| 状态 | benchmark | 现象 | 原因 |
+|------|-----------|------|------|
+| 正常 | 401.bzip2, 429.mcf, 456.hmmer, 458.sjeng, 462.libquantum, 464.h264ref, 471.omnetpp, 473.astar, 483.xalancbmk, 410.bwaves, 433.milc, 434.zeusmp, 435.gromacs, 436.cactusADM, 437.leslie3d, 444.namd, 447.dealII, 453.povray, 459.GemsFDTD, 465.tonto, 470.lbm, 481.wrf | 有 perf 采样数据 |
+| 成功但无采样 | 400.perlbench, 450.soplex, 454.calculix | workload 指令数 < `maxevent`（200M），未触发采样 |
+| 子目录缺失 | 400.perlbench, 445.gobmk, 482.sphinx3 | `lib/`、`golois/`、`model/` 等子目录未打包（已在 gen_binaries.sh 中修复：`cp -r` 目录） |
+| 运行时崩溃 | 416.gamess | `MO-S ARE NOT SYMMETRICAL ENOUGH` | RISC-V 与 x86 浮点精度差异导致对称性检查失败（见下方说明） |
+
+### 416.gamess 浮点精度问题
+
+gamess 在 RISC-V 上运行到分子轨道对称性检查时报错崩溃，日志摘要（完整见 `run_perf_all_test.log`）：
+
+```
+ INTEGRAL TRANSFORMATION CANNOT ASSIGN A DEFINITE ORBITAL SYMMETRY TO MO   19
+ INTEGRAL TRANSFORMATION CANNOT ASSIGN A DEFINITE ORBITAL SYMMETRY TO MO   20
+ ...
+ INTEGRAL TRANSFORMATION CANNOT ASSIGN A DEFINITE ORBITAL SYMMETRY TO MO   30
+
+ ** ERROR **  THE MO-S ARE NOT SYMMETRICAL ENOUGH.
+
+ YOU MUST TAKE ACTION TO RECOVER SYMMETRY, PERHAPS TO
+ PROVIDE A SYMMETRY ADAPTED MO SET BY GUESS=MOREAD,
+ OR ENTER NOSYM=1 TO USE THESE SYMMETRY BROKEN MO-S.
+
+ EXECUTION OF GAMESS TERMINATED -ABNORMALLY- AT ...
+Note: The following floating-point exceptions are signalling: IEEE_UNDERFLOW_FLAG
+STOP IN ABRT
+```
+
+根因是 RISC-V 64-bit FPU 与 x86 x87 80-bit 扩展精度的累积差异：
+
+- x86 x87 FPU 内部寄存器为 80-bit（64-bit 尾数），临时值留在寄存器中时有 11-bit 额外精度
+- RISC-V 仅有 64-bit FPU，所有中间结果均以 64-bit 存储
+- gamess 的对称性阈值在 x86 上"刚好通过"（得益于 80-bit 额外精度），在 RISC-V 上累积误差超出阈值
+
+**可能的修复方向：** 对 gamess 单独降优化到 `-O1`，或加 `-ffloat-store` 强制写回内存；或修改源码放宽容差。
+
 ## 已知问题
 
 - riscv-pk 不支持部分 perlbench.test workload（需要 `fork`）
 - riscv-pk 对某些 ref 输入文件报错，建议使用 Linux 用户模式运行
+- perlbench 的 Perl 模块（`lib/*.pm`）需完整拷贝到运行目录
 
 ## 文件说明
 
