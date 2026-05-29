@@ -164,8 +164,25 @@ function run_workload {
     local log_file="${OUTPUT_DIR}/${bmark_name}_w${widx}_${LOGBASE}.log"
     echo "  [${bmark_name}] workload ${widx}: $(basename "$binary") $(echo "$args" | cut -c1-80)"
 
+    # Separate stdin redirect (< file) from regular args
+    local stdin_file=""
+    local clean_args=()
+    local saw_redirect=false
+    for arg in $args; do
+        if [ "$saw_redirect" = true ]; then
+            stdin_file="$arg"
+            saw_redirect=false
+        elif [ "$arg" = "<" ]; then
+            saw_redirect=true
+        else
+            clean_args+=("$arg")
+        fi
+    done
+
     if [ "$DRY_RUN" = true ]; then
-        echo "    -> perf.riscv <params> ${binary} $(basename "$binary") $args"
+        local redirect_str=""
+        [ -n "$stdin_file" ] && redirect_str=" < ${stdin_file}"
+        echo "    -> perf.riscv <params> ${binary} $(basename "$binary") ${clean_args[*]}${redirect_str}"
         return 0
     fi
 
@@ -174,7 +191,11 @@ function run_workload {
 
     (
         cd "$bmark_dir" || exit 1
-        "$PERF" "$tmp_params" "./$(basename "$binary")" "$(basename "$binary")" $args
+        if [ -n "$stdin_file" ]; then
+            "$PERF" "$tmp_params" "./$(basename "$binary")" "$(basename "$binary")" "${clean_args[@]}" < "$stdin_file"
+        else
+            "$PERF" "$tmp_params" "./$(basename "$binary")" "$(basename "$binary")" "${clean_args[@]}"
+        fi
     )
     local rc=$?
 

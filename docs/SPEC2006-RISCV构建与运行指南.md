@@ -26,160 +26,127 @@ export RISCV_TOOLCHAIN=/opt/riscv-toolchain/bin
 
 ```bash
 ./gen_binaries.sh --compile [--suite int|fp|all] [--input test|train|ref]
+./gen_binaries.sh --package [--suite int|fp|all]
 ```
 
 | 参数 | 可选值 | 默认值 | 说明 |
 |---|---|---|---|
 | `--suite` | int, fp, all | int | 基准测试套件 |
 | `--input` | test, train, ref | test | 输入数据集规模 |
-| `--compile` | — | — | 编译并创建软链接 |
+| `--compile` | — | — | 编译单个输入集并创建 `build/` 软链接（本地开发用） |
+| `--package` | — | — | 编译全部 3 个输入集并打包为 FPGA 可部署的自包含目录 |
+| `--run` | — | — | 运行已编译的 benchmark |
 
-### 一次性构建全部
+### --compile（本地开发用）
+
+编译单个输入集，在 `build/` 下创建指向 SPEC 运行目录的软链接：
 
 ```bash
-# INT: test / ref / train
 ./gen_binaries.sh --compile --suite int --input test
-./gen_binaries.sh --compile --suite int --input ref
-./gen_binaries.sh --compile --suite int --input train
-
-# FP: test / ref / train
-./gen_binaries.sh --compile --suite fp --input test
 ./gen_binaries.sh --compile --suite fp --input ref
-./gen_binaries.sh --compile --suite fp --input train
 ```
 
-## 构建结果
+### --package（FPGA 部署用）
+
+一次性编译 test + train + ref 三个输入集，打包为自包含目录 `spec2006-portable/`：
+
+```bash
+./gen_binaries.sh --package --suite all
+```
+
+产物结构：
 
 ```
-build/
-├── 400.perlbench_test/     -> $SPEC_DIR/benchspec/CPU2006/400.perlbench/run/run_base_test_riscv.0000
-├── 400.perlbench_ref/      -> ...
-├── 400.perlbench_train/    -> ...
-├── 410.bwaves_test/        -> ...
-├── 410.bwaves_ref/         -> ...
-├── 410.bwaves_train/       -> ...
-├── ...                     (共 29 个 benchmark)
-├── 482.sphinx3_test/
-├── 482.sphinx3_ref/
-├── 482.sphinx3_train/
-├── 483.xalancbmk_test/
-├── 483.xalancbmk_ref/
-└── 483.xalancbmk_train/
-
-commands/
-├── 400.perlbench.test.cmd
-├── 400.perlbench.ref.cmd
-├── 400.perlbench.train.cmd      # 新生成
-├── ...                          (共 29 个 benchmark × 3 输入集)
-└── 483.xalancbmk.train.cmd
+spec2006-portable/
+├── 400.perlbench/
+│   ├── perlbench          # 二进制（所有输入集共享）
+│   ├── test/              # test 输入文件
+│   ├── train/             # train 输入文件
+│   └── ref/               # ref 输入文件
+├── 401.bzip2/
+│   ├── bzip2
+│   ├── test/
+│   ├── train/
+│   └── ref/
+├── ...                    # 共 29 个 benchmark
+├── commands/              # 所有 .test/.train/.ref.cmd
+├── run.sh                 # 直接运行脚本
+└── run_perf.sh            # perf 采集脚本
 ```
+
+> `run.sh` 和 `run_perf.sh` 由 `--package` 自动生成，直接在 FPGA 上使用，无需本地预置。
 
 ### 构建耗时
 
-| 套件 | 数量 | 耗时 |
-|---|---|---|
-| INT (test) | 12 | ~2 分钟 |
-| INT (ref) | 12 | ~3 分钟 |
-| FP (test) | 17 | ~4 分钟 |
-| FP (ref) | 17 | ~5 分钟 |
+| 套件 | 数量 | 单个输入集 | 全部 3 输入集 (--package) |
+|---|---|---|---|
+| INT | 12 | ~2-3 分钟 | ~8 分钟 |
+| FP | 17 | ~4-5 分钟 | ~15 分钟 |
+| all | 29 | — | ~20-25 分钟 |
 
-## 运行
+## FPGA 部署与运行
 
-### run.sh — 直接运行（无性能统计）
+### 1. 打包
 
 ```bash
-./run.sh [options] <benchmark-name>
-./run.sh [options] --all [--suite <type> ...] [--input <type>]
+export SPEC_DIR=/opt/cpu2006
+export RISCV_TOOLCHAIN=/opt/riscv-toolchain/bin
+./gen_binaries.sh --package --suite all
 ```
 
-| 参数 | 可选值 | 默认值 | 说明 |
-|---|---|---|---|
-| `--run <cmd>` | 任意运行器 | `spike pk -c` | 如 `qemu-riscv64`、`firefront` |
-| `--suite` | int, fp, all | all | 基准测试套件 |
-| `--input` | test, train, ref | ref | 输入数据集规模 |
-| `--all` | — | — | 运行所选套件的全部 benchmark |
-| `--workload <N>` | 整数 | （全部） | 运行第 N 个 workload |
-| `--output <dir>` | 目录路径 | `./output` | stdout 输出目录 |
-| `--dry-run` | — | — | 只打印命令，不执行 |
-
-**示例：**
+### 2. 部署到 FPGA
 
 ```bash
-# 单个 benchmark，ref 输入
+# 打包为 zip
+zip -r spec2006-portable.zip spec2006-portable/
+
+# 拷贝到 FPGA 并解压
+scp spec2006-portable.zip root@<fpga>:/data/
+ssh root@<fpga> "cd /data && unzip -o spec2006-portable.zip"
+
+# 拷贝 perf.riscv 和配置文件
+scp perf.riscv samplectrl.txt root@<fpga>:/data/spec2006-portable/
+```
+
+### 3. 运行
+
+```bash
+# FPGA 上
+cd /data/spec2006-portable
+
+# 直接运行（替换 --run 为你的运行器）
+./run.sh --all --input test      # test 输入集（轻量，快速验证）
+./run.sh --all --input ref       # ref 输入集（正式跑分）
+./run.sh --all --input train     # train 输入集
+
+# 带 perf 采集
+./run_perf.sh --all --input ref
+
+# 单 benchmark
 ./run.sh --input ref 429.mcf
-
-# 全部 INT benchmark，test 输入，dry-run 查看命令
-./run.sh --all --suite int --input test --dry-run
-
-# 用 qemu 运行 FP train
-./run.sh --all --suite fp --input train --run "qemu-riscv64"
-```
-
-### run_perf.sh — 使用 perf.riscv 采集性能数据
-
-```bash
-./run_perf.sh [options] <benchmark-name>
-./run_perf.sh [options] --all [--suite <type> ...] [--input <type>]
-```
-
-| 参数 | 可选值 | 默认值 | 说明 |
-|---|---|---|---|
-| `--perf <path>` | 路径 | `./perf.riscv` | perf.riscv 路径 |
-| `--params <path>` | 路径 | `./samplectrl.txt` | 采样配置文件路径 |
-| `--suite` | int, fp, all | all | 基准测试套件 |
-| `--input` | test, train, ref | ref | 输入数据集规模 |
-| `--all` | — | — | 运行全部 benchmark |
-| `--workload <N>` | 整数 | （全部） | 运行第 N 个 workload |
-| `--output <dir>` | 目录路径 | `./perf_logs` | 性能日志输出目录 |
-| `--dry-run` | — | — | 只打印命令，不执行 |
-
-**使用方法：**
-
-```bash
-# 确保 perf.riscv 和 samplectrl.txt 在当前目录
-cp /path/to/perf.riscv .
-cp /path/to/samplectrl.txt .
-
-# 单个 benchmark
-./run_perf.sh --input ref 429.mcf
-
-# 单个 workload
 ./run_perf.sh --input ref 429.mcf --workload 0
 
-# 全部 INT + FP，test 输入
-./run_perf.sh --all --suite int --suite fp --input test
+# 指定运行器
+./run.sh --all --input ref --run "qemu-riscv64"
 
-# 仅 FP，ref 输入
-./run_perf.sh --all --suite fp --input ref
-
-# dry-run 预览命令
-./run_perf.sh --all --suite int --input ref --dry-run
-
-# 自定义 perf 和参数文件路径
-./run_perf.sh --perf /opt/perf.riscv --params /opt/samplectrl.txt --all
+# 预览命令
+./run.sh --all --input ref --dry-run
 ```
 
-**perf.riscv 调用模式：**
+### 4. run.sh / run_perf.sh 参数
 
-```
-perf.riscv <samplectrl.txt> <program_path> <program_name> [args...]
-```
+| 参数 | 可选值 | 默认值 | 说明 |
+|---|---|---|---|
+| `--run <cmd>` | 任意 | `spike pk -c` | 运行器命令（仅 run.sh） |
+| `--perf <path>` | 路径 | `./perf.riscv` | perf 路径（仅 run_perf.sh） |
+| `--params <path>` | 路径 | `./samplectrl.txt` | 采样配置（仅 run_perf.sh） |
+| `--suite` | int, fp, all | all | 套件 |
+| `--input` | test, train, ref | ref | 输入集 |
+| `--all` | — | — | 运行全部 benchmark |
+| `--workload <N>` | 整数 | 全部 | 只运行第 N 个 workload |
+| `--dry-run` | — | — | 只打印命令，不执行 |
 
-脚本自动从 `commands/<b>.<input>.cmd` 读取每个 workload 的参数，逐个运行并重定向 `samplectrl.txt` 中的 `logname` 到 `perf_logs/<benchmark>_w<N>_<logbase>.log`。
-
-**日志输出：**
-
-```
-perf_logs/
-├── 400.perlbench_w0_counter.log
-├── 400.perlbench_w1_counter.log
-├── 400.perlbench_w2_counter.log
-├── 401.bzip2_w0_counter.log
-├── ...
-└── 482.sphinx3_w0_counter.log
-```
-
-### samplectrl.txt 配置示例
+### 5. samplectrl.txt 配置示例
 
 ```ini
 eventsel: 0          # 采样事件类型
@@ -304,11 +271,17 @@ GCC 14 对类型检查、隐式声明等更严格，需要在 `riscv.cfg` 中为
 
 | 改进项 | 说明 |
 |---|---|
-| `--input test\|train\|ref` | 新增输入集参数，默认 `test` |
-| `--suite int\|fp\|all` | 新增套件参数，默认 `int` |
+| `--package` | 新增：一次性构建 test+train+ref，生成 FPGA 自包含部署目录 |
+| `--input test\|train\|ref` | 输入集参数，默认 `test` |
+| `--suite int\|fp\|all` | 套件参数，默认 `int` |
 | RISC-V 工具链自动检测 | 读取 `$RISCV_TOOLCHAIN` 环境变量，自动加入 `PATH` |
 | `set -e` | 启用严格错误退出 |
-| BENCHMARKS 赋值位置修正 | 原来在参数解析**之前**赋值，导致 `--suite fp` 无效。已移到参数解析之后 |
+| BENCHMARKS 赋值位置修正 | 从参数解析**之前**移到**之后**，修复 `--suite fp` 无效的 bug |
+| 403.gcc `.i→.in` 自动处理 | 打包时自动创建软链接（SPEC 提供 `.i`，benchmark 期望 `.in`） |
+| 459.GemsFDTD stdin 文件适配 | 打包时自动创建 `test.in` → `ref.in`/`train.in` 软链接 |
+| `/bin/sh` 兼容性修复 | 移除 bashism，确保脚本在 FPGA 上正常运行 |
+| run.sh / run_perf.sh 内置生成 | `--package` 自动生成适配便携结构的运行脚本 |
+| `<` stdin 重定向处理 | 运行脚本显式解析 `< input.file` 并做真正的 shell 重定向 |
 
 ### 5. train 命令文件生成
 
@@ -329,11 +302,10 @@ GCC 14 对类型检查、隐式声明等更严格，需要在 `riscv.cfg` 中为
 
 | 文件 | 用途 |
 |---|---|
-| `gen_binaries.sh` | 主构建脚本（交叉编译 + 软链接） |
-| `run.sh` | 运行脚本（直接运行 benchmark，无 perf） |
-| `run_perf.sh` | 性能采集脚本（调用 perf.riscv 自动运行并记录） |
+| `gen_binaries.sh` | 主构建脚本：`--compile` 编译 + 软链接；`--package` 生成 FPGA 部署包 |
 | `riscv.cfg` | RISC-V 交叉编译配置（GCC 14 适配） |
 | `arm.cfg` | ARM 编译配置（较旧，未维护） |
-| `commands/` | 各 benchmark 的运行参数（.test/.ref/.train.cmd） |
-| `build/` | 构建产物软链接（指向 SPEC 运行目录） |
+| `commands/` | 各 benchmark 的运行参数（.test/.ref/.train.cmd，共 87 个） |
+| `build/` | `--compile` 产物软链接（指向 SPEC 运行目录） |
+| `spec2006-portable/` | `--package` 产物（FPGA 自包含部署目录） |
 | `docs/` | 文档 |
