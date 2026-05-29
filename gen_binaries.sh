@@ -141,12 +141,15 @@ if [ "$packageFlag" = true ]; then
            [ ! -d "$run_dir" ] && continue
            mkdir -p "$PACKAGE_DIR/$b/$cur_input"
            for f in "$run_dir"/*; do
-               [ -f "$f" ] || continue
                case "$(basename "$f")" in
                    *_base.*|*.o|*.a|Makefile*|*.deps|*.spec|speccmds.cmd|compare.cmd|compare.err|*.out|*.err|*.log)
                        continue ;;
                esac
-               cp "$f" "$PACKAGE_DIR/$b/$cur_input/"
+               if [ -d "$f" ]; then
+                   cp -r "$f" "$PACKAGE_DIR/$b/$cur_input/"
+               else
+                   cp "$f" "$PACKAGE_DIR/$b/$cur_input/"
+               fi
            done
        done
 
